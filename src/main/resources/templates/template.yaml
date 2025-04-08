@@ -1,0 +1,167 @@
+AWSTemplateFormatVersion: "2010-09-09"
+Resources:
+  # --------------------
+  # IAM Role for EC2 (ECR & SSM Access)
+  # --------------------
+  EC2IAMRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service: "ec2.amazonaws.com"
+            Action: "sts:AssumeRole"
+      Policies:
+        - PolicyName: "ECRSSMParameterAccess"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              - Effect: "Allow"
+                Action:
+                  - "ssm:GetParametersByPath"
+                  - "ssm:GetParameter"
+                  - "ssm:DescribeParameters"
+                Resource: "arn:aws:ssm:us-east-1:YOUR_AWS_ACCOUNT_ID:parameter/crm/*"
+              - Effect: "Allow"
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:GetDownloadUrlForLayer"
+                  - "ecr:BatchGetImage"
+                Resource: "*"
+
+  # --------------------
+  # IAM Instance Profile for EC2
+  # --------------------
+  EC2InstanceProfile:
+    Type: "AWS::IAM::InstanceProfile"
+    Properties:
+      Roles:
+        - !Ref EC2IAMRole
+
+  # --------------------
+  # Amazon Cognito User Pool
+  # --------------------
+  CognitoUserPool:
+    Type: "AWS::Cognito::UserPool"
+    Properties:
+      UserPoolName: "CRMUserPool"
+      UsernameAttributes:
+        - "email"
+      AutoVerifiedAttributes:
+        - "email"
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+
+  # --------------------
+  # Cognito User Pool Client
+  # --------------------
+  CognitoUserPoolClient:
+    Type: "AWS::Cognito::UserPoolClient"
+    Properties:
+      ClientName: "CRMAppClient"
+      UserPoolId: !Ref CognitoUserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - "ALLOW_USER_SRP_AUTH"
+        - "ALLOW_REFRESH_TOKEN_AUTH"
+
+  # --------------------
+  # EC2 Instance
+  # --------------------
+  CRMEC2Instance:
+    Type: "AWS::EC2::Instance"
+    Properties:
+      InstanceType: "t3.micro"
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      IamInstanceProfile: !Ref EC2InstanceProfile
+      ImageId: "ami-0c55b159cbfafe1f0" # Update with latest Amazon Linux 2 AMI
+      Tags:
+        - Key: "Name"
+          Value: "CRM-Server"
+
+  # --------------------
+  # Security Group for EC2
+  # --------------------
+  EC2SecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow EC2 to connect to RDS"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: "0.0.0.0/0" # Restrict in production!
+      SecurityGroupEgress:
+        - IpProtocol: tcp
+          FromPort: 5432 # PostgreSQL Port
+          ToPort: 5432
+          DestinationSecurityGroupId: !Ref RDSSecurityGroup
+
+  # --------------------
+  # Security Group for RDS
+  # --------------------
+  RDSSecurityGroup:
+    Type: "AWS::EC2::SecurityGroup"
+    Properties:
+      GroupDescription: "Allow RDS access from EC2"
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 5432
+          ToPort: 5432
+          SourceSecurityGroupId: !Ref EC2SecurityGroup
+
+  # --------------------
+  # RDS Database
+  # --------------------
+  CRMDatabase:
+    Type: "AWS::RDS::DBInstance"
+    Properties:
+      Engine: "postgres"
+      DBInstanceClass: "db.t3.micro"
+      AllocatedStorage: "20"
+      DBName: "crmdb"
+      MasterUsername: !Sub "{{resolve:ssm:/crm/db/username}}"
+      MasterUserPassword: !Sub "{{resolve:ssm:/crm/db/password}}"
+      VPCSecurityGroups:
+        - !Ref RDSSecurityGroup
+      PubliclyAccessible: false
+
+  # --------------------
+  # ECR Repository for Docker Images
+  # --------------------
+  CRMContainerRepository:
+    Type: "AWS::ECR::Repository"
+    Properties:
+      RepositoryName: "crm-app"
+
+Outputs:
+  CRMEC2Instance:
+    Description: "CRM EC2 Instance ID"
+    Value: !Ref CRMEC2Instance
+
+  CRMDatabaseEndpoint:
+    Description: "CRM Database Endpoint"
+    Value: !GetAtt CRMDatabase.Endpoint.Address
+
+  CognitoUserPoolId:
+    Description: "Cognito User Pool ID"
+    Value: !Ref CognitoUserPool
+
+  CognitoUserPoolClientId:
+    Description: "Cognito User Pool Client ID"
+    Value: !Ref CognitoUserPoolClient
+
+  ECRRepositoryURI:
+    Description: "ECR Repository URI"
+    Value: !GetAtt CRMContainerRepository.RepositoryUri

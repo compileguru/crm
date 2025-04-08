@@ -1,2 +1,2 @@
 # crm
-A sample CRM containerized app with event notifications deployed on AWS
+Sample CRM Containerized application using Oauth2.0, JWT, Docker, DynamoDB & Cognito authentication. Deployed on AMAZON EC2
